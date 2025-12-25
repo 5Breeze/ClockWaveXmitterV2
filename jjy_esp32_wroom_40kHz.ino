@@ -53,7 +53,8 @@ bool config_mode = false;
 String current_lang = "en";
 
 // Web Server & WiFi
-const char* ap_ssid = "ClockWave-Config";
+String ap_ssid_base = "ClockWave-Config";  // 基础AP名称
+String ap_ssid;                            // 动态生成带MAC的AP名称
 const char* ap_password = "12345678";
 WebServer server(80);
 DNSServer dnsServer;
@@ -197,19 +198,6 @@ int dec2BCD(int decimal) {
   return (((decimal / 10) << 4) | (decimal % 10));
 }
 
-// // 安全的定时器中断（仅更新毫秒计数，不做复杂操作）
-// void IRAM_ATTR txTimerCallback(void* arg) {
-//   if (!ntp_time_valid) {
-//     if (duty_now != 0) {
-//       ledcWrite(ledChannel, 0);
-//       duty_now = 0;
-//     }
-//     return;
-//   }
-//   ms_in_sec++;
-//   if (ms_in_sec >= 1000) ms_in_sec = 0; // 重置秒内毫秒计数
-// }
-
 // 设置PWM频率
 void setupPWM(int protocol) {
   int freq = 40000;
@@ -231,7 +219,7 @@ void setupPWM(int protocol) {
 // ==========================================
 void JJY_encode(struct tm *timeInfo) {
   memset(sg, 0, 60);
-  const char M = -1; // Marker
+  const int8_t M = -1; // Marker
   sg[0]=sg[9]=sg[19]=sg[29]=sg[39]=sg[49]=sg[59] = M; // 标记位
    
   // 提取时间
@@ -276,7 +264,7 @@ void JJY_encode(struct tm *timeInfo) {
 
 void WWVB_encode(struct tm *timeInfo) {
   memset(sg, 0, 60);
-  const char M = -1; // Marker
+  const int8_t M = -1; // Marker
   sg[0]=sg[9]=sg[19]=sg[29]=sg[39]=sg[49]=sg[59] = M;
    
   int min = timeInfo->tm_min;
@@ -301,6 +289,16 @@ void WWVB_encode(struct tm *timeInfo) {
   // 年份编码
   sg[45] = (year/10)>>3 & 1; sg[46] = (year/10)>>2 & 1; sg[47] = (year/10)>>1 & 1; sg[48] = (year/10) & 1;
   sg[50] = (year%10)>>3 & 1; sg[51] = (year%10)>>2 & 1; sg[52] = (year%10)>>1 & 1; sg[53] = (year%10) & 1;
+}
+
+// 工具函数：统计一个整数二进制中1的个数
+int count_ones(int num) {
+    int count = 0;
+    while(num > 0) {
+        count += (num & 1); // 取最低位，是1则计数+1
+        num >>= 1; // 右移一位
+    }
+    return count;
 }
 
 void BPC_encode(struct tm *timeInfo) {
@@ -362,10 +360,11 @@ void BPC_encode(struct tm *timeInfo) {
 
     // 10秒位：AM/PM + P1奇偶校验（偶校验：覆盖01-09秒位）
     int parity_p1 = 0;
-    // 统计01-09秒位中1的个数（偶校验：偶数个1则P1=0，奇数则P1=1）
+    // 统计01-09秒位的所有二进制位中1的总数
     for(int i=1; i<=9; i++) {
-        parity_p1 += sg[i]; // 统计每个字节的1的个数
+        parity_p1 += count_ones(sg[i]); // 先统计每个数的1的个数，再累加
     }
+    // 偶校验计算
     parity_p1 = (parity_p1 % 2) == 0 ? 0 : 1;
     // 10秒位：bit1=P1校验, bit0=AM/PM → 组合为四进制值
     sg[10] = (is_pm << 1) | (parity_p1);
@@ -389,7 +388,7 @@ void BPC_encode(struct tm *timeInfo) {
     // 19秒位：P2奇偶校验（偶校验：覆盖11-18秒位）
     int parity_p2 = 0;
     for(int i=11; i<=18; i++) {
-        parity_p2 += sg[i];
+        parity_p2 += count_ones(sg[i]);
     }
     parity_p2 = (parity_p2 % 2) == 0 ? 0 : 1;
     
@@ -716,12 +715,23 @@ bool connectToWiFi() {
 
 // 启动AP模式
 void startAPMode() {
+  // 获取设备MAC地址并格式化（去掉冒号，转大写）
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");  // 移除MAC中的冒号
+  mac.toUpperCase();     // 转大写（可选）
+  
+  // 生成带MAC后缀的AP名称（取后6位避免过长，也可保留完整）
+  ap_ssid = ap_ssid_base + "-" + mac.substring(6);  // 例如：ClockWave-Config-ABCD12
+  
+  // 启动AP
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255,255,255,0));
-  WiFi.softAP(ap_ssid, ap_password);
+  WiFi.softAP(ap_ssid.c_str(), ap_password);  // 传入动态生成的AP名称
   dnsServer.start(DNS_PORT, "*", apIP);
+  
+  // 打印带MAC的AP信息
   Serial.printf("AP Mode Started: %s (Password: %s), IP: %s\n", 
-                ap_ssid, ap_password, apIP.toString().c_str());
+                ap_ssid.c_str(), ap_password, apIP.toString().c_str());
 }
 
 // ==========================================
