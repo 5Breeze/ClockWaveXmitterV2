@@ -62,6 +62,13 @@ Preferences prefs;
 const byte DNS_PORT = 53;
 IPAddress apIP(192, 168, 4, 1);
 
+// 密钥验证相关
+String device_mac;         // 设备MAC地址（原始）
+String auth_key;           // 生成的认证密钥（MAC反序+异或混淆）
+bool auth_verified = false;// 密钥验证状态
+String input_key = "";     // 用户输入的密钥
+const uint8_t XOR_KEY[] = {0x5A, 0x6B, 0x7C, 0x8D, 0x9E, 0xAF}; // 固定异或混淆密钥（6字节，与MAC长度匹配）
+
 // 时间与同步控制变量
 unsigned long last_ntp_sync = 0;
 const unsigned long ntp_sync_interval = 3600000; // 1小时同步一次
@@ -94,6 +101,14 @@ struct LanguageStrings {
   const char* lang_cn;
   const char* ap_mode_ntp_error;
   const char* ap_mode_hint;
+  // 新增密钥验证相关
+  const char* auth_title;
+  const char* device_mac_label;
+  const char* auth_key_label;
+  const char* auth_key_placeholder;
+  const char* verify_btn;
+  const char* auth_success;
+  const char* auth_failed;
 };
 
 LanguageStrings lang_en = {
@@ -103,7 +118,15 @@ LanguageStrings lang_en = {
   "Configuration saved! Restarting...", "Cannot sync NTP - WiFi not connected!",
   "NTP synchronized successfully!", "NTP sync failed!", "Restarting device...",
   "English", "中文",
-  "Cannot sync NTP in AP mode!", "Device in AP mode - Configure WiFi first."
+  "Cannot sync NTP in AP mode!", "Device in AP mode - Configure WiFi first.",
+  // 新增密钥验证
+  "Device Authentication",
+  "Device MAC Address",
+  "Authentication Key",
+  "oshwhub by 五月景风",
+  "Verify Key",
+  "Authentication successful!",
+  "Authentication failed! Wrong key."
 };
 
 LanguageStrings lang_cn = {
@@ -113,7 +136,15 @@ LanguageStrings lang_cn = {
   "配置保存成功！设备将重启...", "无法同步NTP - WiFi未连接！",
   "NTP时间同步成功！", "NTP同步失败！", "正在重启设备...",
   "English", "中文",
-  "AP模式下无法同步NTP！", "设备处于AP模式 - 请先配置WiFi。"
+  "AP模式下无法同步NTP！", "设备处于AP模式 - 请先配置WiFi。",
+  // 新增密钥验证
+  "设备认证",
+  "设备MAC地址",
+  "认证密钥",
+  "oshwhub联系五月景风",
+  "验证密钥",
+  "认证成功！",
+  "认证失败！密钥错误。"
 };
 
 // ==========================================
@@ -139,9 +170,11 @@ const char* html_template = R"HTML(
         .success { background-color: #dcfce7; color: #059669; }
         .error { background-color: #fee2e2; color: #dc2626; }
         .info { background-color: #dbeafe; color: #2563eb; }
+        .auth-section { border: 1px solid #e5e7eb; padding: 1rem; border-radius: 0.75rem; margin-bottom: 1.5rem; }
         .lang-switch { position: absolute; top: 20px; right: 20px; }
         .lang-btn { background: white; color: #333; padding: 5px 10px; border: 1px solid #ccc; width: auto; }
         .lang-btn.active { background: var(--primary); color: white; }
+        .disabled-section { opacity: 0.5; pointer-events: none; }
     </style>
 </head>
 <body>
@@ -153,34 +186,54 @@ const char* html_template = R"HTML(
         <h2>%HEADER%</h2>
         %STATUS%
         %AP_MODE_HINT%
-        <form method="POST" action="/save?lang=%LANG%">
-            <div class="form-group">
-                <label>%SSID_LABEL%</label>
-                <input type="text" name="ssid" value="%SSID%" required>
-            </div>
-            <div class="form-group">
-                <label>%PASSWORD_LABEL%</label>
-                <input type="password" name="password" value="%PASSWORD%">
-            </div>
-            <div class="form-group">
-                <label>%TIMEZONE_LABEL%</label>
-                <input type="number" name="timezone" value="%TIMEZONE%" step="0.5" required>
-            </div>
-            <div class="form-group">
-                <label>%PROTO_LABEL%</label>
-                <select name="protocol">
-                    <option value="0" %SEL_0%>JJY (40kHz) - Japan</option>
-                    <option value="1" %SEL_1%>JJY (60kHz) - Japan</option>
-                    <option value="2" %SEL_2%>WWVB (60kHz) - USA</option>
-                    <option value="3" %SEL_3%>BPC (68.5kHz) - China</option>
-                </select>
-            </div>
-            <button type="submit">%SAVE_BTN%</button>
-        </form>
-        <hr style="margin: 1.5rem 0; border: 0; border-top: 1px solid #eee;">
-        <form method="POST" action="/sync_ntp?lang=%LANG%">
-            <button type="submit" style="background-color: #3b82f6;" %SYNC_DISABLED%>%SYNC_BTN%</button>
-        </form>
+        
+        <!-- 密钥验证区域 -->
+        <div class="auth-section">
+            <h3 style="text-align:center; margin-top:0;">%AUTH_TITLE%</h3>
+            <form method="POST" action="/verify_key?lang=%LANG%">
+                <div class="form-group">
+                    <label>%DEVICE_MAC_LABEL%:</label>
+                    <input type="text" value="%DEVICE_MAC%" readonly style="background:#f9fafb;">
+                </div>
+                <div class="form-group">
+                    <label>%AUTH_KEY_LABEL%:</label>
+                    <input type="password" name="auth_key" placeholder="%AUTH_KEY_PLACEHOLDER%" required>
+                </div>
+                <button type="submit">%VERIFY_BTN%</button>
+            </form>
+        </div>
+
+        <!-- 主配置区域（未验证时禁用） -->
+        <div class="%DISABLE_MAIN%">
+            <form method="POST" action="/save?lang=%LANG%">
+                <div class="form-group">
+                    <label>%SSID_LABEL%</label>
+                    <input type="text" name="ssid" value="%SSID%" required>
+                </div>
+                <div class="form-group">
+                    <label>%PASSWORD_LABEL%</label>
+                    <input type="password" name="password" value="%PASSWORD%">
+                </div>
+                <div class="form-group">
+                    <label>%TIMEZONE_LABEL%</label>
+                    <input type="number" name="timezone" value="%TIMEZONE%" step="0.5" required>
+                </div>
+                <div class="form-group">
+                    <label>%PROTO_LABEL%</label>
+                    <select name="protocol">
+                        <option value="0" %SEL_0%>JJY (40kHz) - Japan</option>
+                        <option value="1" %SEL_1%>JJY (60kHz) - Japan</option>
+                        <option value="2" %SEL_2%>WWVB (60kHz) - USA</option>
+                        <option value="3" %SEL_3%>BPC (68.5kHz) - China</option>
+                    </select>
+                </div>
+                <button type="submit">%SAVE_BTN%</button>
+            </form>
+            <hr style="margin: 1.5rem 0; border: 0; border-top: 1px solid #eee;">
+            <form method="POST" action="/sync_ntp?lang=%LANG%">
+                <button type="submit" style="background-color: #3b82f6;" %SYNC_DISABLED%>%SYNC_BTN%</button>
+            </form>
+        </div>
     </div>
 </body>
 </html>
@@ -191,6 +244,70 @@ const char* html_template = R"HTML(
 // ==========================================
 LanguageStrings getLangStrings() {
   return (current_lang == "cn") ? lang_cn : lang_en;
+}
+
+// 生成混淆后的认证密钥（反向MAC + 异或加密）
+String generateAuthKey(String mac) {
+  // 1. 反转MAC字符串（原始清理后：AABBCCDDEEFF → FFEEDDCCBBAA）
+  String reversed_mac = "";
+  for (int i = mac.length() - 1; i >= 0; i--) {
+    reversed_mac += mac[i];
+  }
+  
+  // 2. 转字节数组并异或混淆
+  uint8_t mac_bytes[6];
+  // 字符串转字节（FFEEDDCCBBAA → 0xFF,0xEE,0xDD,0xCC,0xBB,0xAA）
+  for (int i = 0; i < 6; i++) {
+    String byte_str = reversed_mac.substring(i*2, i*2+2);
+    mac_bytes[i] = strtol(byte_str.c_str(), NULL, 16);
+    // 异或混淆
+    mac_bytes[i] ^= XOR_KEY[i];
+  }
+  
+  // 3. 混淆后的字节转回十六进制字符串（补前导0）
+  String encrypted_key = "";
+  for (int i = 0; i < 6; i++) {
+    encrypted_key += byteToHex(mac_bytes[i]); // 使用补零函数
+  }
+  encrypted_key.toUpperCase(); // 统一转大写
+  return encrypted_key;
+}
+
+// 验证密钥（反向处理：输入密钥→异或解密→转反向MAC→对比）
+bool verifyAuthKey(String input) {
+  input.toUpperCase();
+  if (input.length() != 12) return false; // 校验长度（必须12位）
+  
+  // 1. 输入密钥转字节并异或解密
+  uint8_t input_bytes[6];
+  for (int i = 0; i < 6; i++) {
+    String byte_str = input.substring(i*2, i*2+2);
+    input_bytes[i] = strtol(byte_str.c_str(), NULL, 16);
+    input_bytes[i] ^= XOR_KEY[i]; // 异或解密
+  }
+  
+  // 2. 解密后的字节转回反向MAC字符串（补前导0）
+  String decrypted_reversed = "";
+  for (int i = 0; i < 6; i++) {
+    decrypted_reversed += byteToHex(input_bytes[i]); // 补零
+  }
+  decrypted_reversed.toUpperCase();
+  
+  // 3. 生成原始反向MAC（用于对比）
+  String mac_clean = device_mac;
+  mac_clean.replace(":", "");
+  mac_clean.toUpperCase();
+  String original_reversed = "";
+  for (int i = mac_clean.length() - 1; i >= 0; i--) {
+    original_reversed += mac_clean[i];
+  }
+  
+  // 调试打印（方便定位）
+  Serial.printf("Original Reversed MAC: %s\n", original_reversed.c_str());
+  Serial.printf("Decrypted Input Key: %s\n", decrypted_reversed.c_str());
+  
+  // 4. 对比解密后的值与原始反向MAC
+  return (decrypted_reversed == original_reversed);
 }
 
 // 转换十进制到BCD
@@ -301,6 +418,16 @@ int count_ones(int num) {
     return count;
 }
 
+// 工具函数：字节转2位十六进制字符串（补前导0）
+String byteToHex(uint8_t byte) {
+  String hex = String(byte, HEX);
+  if (hex.length() == 1) {
+    hex = "0" + hex; // 补前导0（如0x5 → "05"）
+  }
+  hex.toUpperCase();
+  return hex;
+}
+
 void BPC_encode(struct tm *timeInfo) {
     memset(sg, 0, 60); // 初始化数组
     
@@ -400,8 +527,8 @@ void BPC_encode(struct tm *timeInfo) {
 // 核心逻辑：每秒切换信号值，秒内前T毫秒低电平（载波关），后(1000-T)毫秒高电平（载波开）
 // ==========================================
 void processSignalTransmission() {
-  // 1. NTP时间无效时，强制关闭载波
-  if (!ntp_time_valid) {
+  // 1. 密钥未验证或NTP时间无效时，强制关闭载波
+  if (!auth_verified || !ntp_time_valid) {
     if (current_duty != 0) {
       ledcWrite(ledChannel, 0);
       current_duty = 0;
@@ -561,6 +688,16 @@ String generateHTML(String status = "") {
   html.replace("%EN_ACTIVE%", (current_lang == "en") ? "active" : "");
   html.replace("%CN_ACTIVE%", (current_lang == "cn") ? "active" : "");
   
+  // 新增密钥验证相关替换
+  html.replace("%AUTH_TITLE%", lang.auth_title);
+  html.replace("%DEVICE_MAC_LABEL%", lang.device_mac_label);
+  html.replace("%AUTH_KEY_LABEL%", lang.auth_key_label);
+  html.replace("%AUTH_KEY_PLACEHOLDER%", lang.auth_key_placeholder);
+  html.replace("%VERIFY_BTN%", lang.verify_btn);
+  html.replace("%DEVICE_MAC%", device_mac); // 填充设备MAC
+  // 未验证时禁用主配置区域
+  html.replace("%DISABLE_MAIN%", auth_verified ? "" : "disabled-section");
+  
   // 替换配置值
   html.replace("%SSID%", wifi_ssid);
   html.replace("%PASSWORD%", wifi_password);
@@ -579,7 +716,7 @@ String generateHTML(String status = "") {
     html.replace("%SYNC_DISABLED%", "disabled style='background-color:#ccc;cursor:not-allowed;'");
   } else {
     html.replace("%AP_MODE_HINT%", "");
-    html.replace("%SYNC_DISABLED%", "");
+    html.replace("%SYNC_DISABLED%", auth_verified ? "" : "disabled style='background-color:#ccc;cursor:not-allowed;'");
   }
   
   return html;
@@ -617,6 +754,29 @@ void handleSave() {
   delay(1000);
   ESP.restart();
 }
+// 密钥验证处理
+void handleVerifyKey() {
+  if (server.hasArg("lang")) current_lang = server.arg("lang");
+  LanguageStrings lang = getLangStrings();
+  input_key = server.arg("auth_key");
+  input_key.replace(":", ""); // 移除可能的冒号
+  input_key.toUpperCase();    // 统一转大写
+  
+  String status;
+  // 使用新的验证函数（异或解密后对比）
+  if (verifyAuthKey(input_key)) {
+    auth_verified = true;
+    prefs.putBool("auth_verified", true); // 保存验证状态
+    status = "<div class='status success'>" + String(lang.auth_success) + "</div>";
+    Serial.println("Authentication successful!");
+  } else {
+    auth_verified = false;
+    status = "<div class='status error'>" + String(lang.auth_failed) + "</div>";
+    Serial.printf("Auth failed! Input: %s\n", input_key.c_str());
+  }
+  
+  server.send(200, "text/html; charset=UTF-8", generateHTML(status));
+}
 
 void setupWebServer() {
   // 根页面
@@ -625,13 +785,23 @@ void setupWebServer() {
     server.send(200, "text/html; charset=UTF-8", generateHTML(""));
   });
    
+  // 密钥验证
+  server.on("/verify_key", HTTP_POST, handleVerifyKey);
+   
   // 保存配置
   server.on("/save", HTTP_POST, handleSave);
    
-  // 同步NTP
+  // 同步NTP（增加密钥验证检查）
   server.on("/sync_ntp", HTTP_POST, []() {
     if (server.hasArg("lang")) current_lang = server.arg("lang");
     LanguageStrings lang = getLangStrings();
+    
+    // 先检查密钥验证
+    if (!auth_verified) {
+      server.send(200, "text/html; charset=UTF-8", generateHTML("<div class='status error'>请先完成设备认证！</div>"));
+      return;
+    }
+    
     if (config_mode) {
       server.send(200, "text/html; charset=UTF-8", generateHTML(String("<div class='status error'>") + lang.ap_mode_ntp_error + "</div>"));
     } else {
@@ -651,7 +821,6 @@ void setupWebServer() {
   server.begin();
   Serial.println("Web Server Started");
 }
-
 // 同步NTP时间（修正时区配置）
 bool syncNTPTime() {
   if (WiFi.status() != WL_CONNECTED) return false;
@@ -758,6 +927,21 @@ void setup() {
   // 初始化Flash存储
   prefs.begin("ClockWave", false);
   
+  // ========== 新增：初始化MAC和认证密钥 ==========
+  device_mac = WiFi.macAddress(); // 获取原始MAC（带冒号）
+  String mac_clean = device_mac;
+  mac_clean.replace(":", "");
+  mac_clean.toUpperCase();
+  auth_key = generateAuthKey(mac_clean); // 生成反向+异或混淆的密钥
+
+  Serial.printf("Device MAC: %s\n", device_mac.c_str());
+  Serial.printf("Original Reversed MAC: ");
+  String original_reversed = "";
+  for (int i = mac_clean.length() - 1; i >= 0; i--) original_reversed += mac_clean[i];
+  Serial.println(original_reversed);
+  Serial.printf("Encrypted Auth Key: %s\n", auth_key.c_str()); // 混淆后的密钥
+  Serial.printf("Auth Status: %s\n", auth_verified ? "Verified" : "Not Verified");
+  
   // 读取配置
   wifi_ssid = prefs.getString("wifi_ssid","");
   wifi_password = prefs.getString("wifi_password","");
@@ -773,22 +957,16 @@ void setup() {
     startAPMode();
     digitalWrite(LEDB, LOW);
   } else {
-    // 同步NTP时间
-    syncNTPTime();
+    // 同步NTP时间（仅当密钥验证通过时）
+    if (auth_verified) {
+      syncNTPTime();
+    } else {
+      Serial.println("Skip NTP sync: Authentication required");
+    }
   }
 
   // 初始化Web服务器
   setupWebServer();
-
-  // // 初始化定时器（1ms周期，仅更新毫秒计数）
-  // esp_timer_create_args_t timer_args = {
-  //   .callback = &txTimerCallback,
-  //   .name = "tx_timer",
-  //   .arg = nullptr,
-  //   .dispatch_method = ESP_TIMER_TASK, // 非中断模式，更安全
-  // };
-  // esp_timer_create(&timer_args, &tx_timer);
-  // esp_timer_start_periodic(tx_timer, timer_period_us);
 
   Serial.println("System Initialized");
 }
