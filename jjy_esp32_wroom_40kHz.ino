@@ -68,6 +68,7 @@ String auth_key;           // 生成的认证密钥（MAC反序+异或混淆）
 bool auth_verified = false;// 密钥验证状态
 String input_key = "";     // 用户输入的密钥
 const uint8_t XOR_KEY[] = {0x5A, 0x6B, 0x7C, 0x8D, 0x9E, 0xAF}; // 固定异或混淆密钥（6字节，与MAC长度匹配）
+String saved_auth_key = "";// 保存的验证通过的密钥
 
 // 时间与同步控制变量
 unsigned long last_ntp_sync = 0;
@@ -148,7 +149,7 @@ LanguageStrings lang_cn = {
 };
 
 // ==========================================
-// HTML 模板
+// HTML 模板（新增条件隐藏密钥区域）
 // ==========================================
 const char* html_template = R"HTML(
 <!DOCTYPE html>
@@ -175,6 +176,7 @@ const char* html_template = R"HTML(
         .lang-btn { background: white; color: #333; padding: 5px 10px; border: 1px solid #ccc; width: auto; }
         .lang-btn.active { background: var(--primary); color: white; }
         .disabled-section { opacity: 0.5; pointer-events: none; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
@@ -187,8 +189,8 @@ const char* html_template = R"HTML(
         %STATUS%
         %AP_MODE_HINT%
         
-        <!-- 密钥验证区域 -->
-        <div class="auth-section">
+        <!-- 密钥验证区域（已验证则隐藏） -->
+        <div class="auth-section %HIDE_AUTH%">
             <h3 style="text-align:center; margin-top:0;">%AUTH_TITLE%</h3>
             <form method="POST" action="/verify_key?lang=%LANG%">
                 <div class="form-group">
@@ -244,6 +246,16 @@ const char* html_template = R"HTML(
 // ==========================================
 LanguageStrings getLangStrings() {
   return (current_lang == "cn") ? lang_cn : lang_en;
+}
+
+// 工具函数：字节转2位十六进制字符串（补前导0）
+String byteToHex(uint8_t byte) {
+  String hex = String(byte, HEX);
+  if (hex.length() == 1) {
+    hex = "0" + hex; // 补前导0（如0x5 → "05"）
+  }
+  hex.toUpperCase();
+  return hex;
 }
 
 // 生成混淆后的认证密钥（反向MAC + 异或加密）
@@ -308,6 +320,17 @@ bool verifyAuthKey(String input) {
   
   // 4. 对比解密后的值与原始反向MAC
   return (decrypted_reversed == original_reversed);
+}
+
+// 自动验证保存的密钥
+void autoVerifySavedKey() {
+  if (saved_auth_key.length() == 12) {
+    auth_verified = verifyAuthKey(saved_auth_key);
+    Serial.printf("Auto Verify: %s\n", auth_verified ? "Success" : "Failed");
+  } else {
+    auth_verified = false;
+    Serial.println("Auto Verify: No saved key found");
+  }
 }
 
 // 转换十进制到BCD
@@ -416,16 +439,6 @@ int count_ones(int num) {
         num >>= 1; // 右移一位
     }
     return count;
-}
-
-// 工具函数：字节转2位十六进制字符串（补前导0）
-String byteToHex(uint8_t byte) {
-  String hex = String(byte, HEX);
-  if (hex.length() == 1) {
-    hex = "0" + hex; // 补前导0（如0x5 → "05"）
-  }
-  hex.toUpperCase();
-  return hex;
 }
 
 void BPC_encode(struct tm *timeInfo) {
@@ -695,7 +708,8 @@ String generateHTML(String status = "") {
   html.replace("%AUTH_KEY_PLACEHOLDER%", lang.auth_key_placeholder);
   html.replace("%VERIFY_BTN%", lang.verify_btn);
   html.replace("%DEVICE_MAC%", device_mac); // 填充设备MAC
-  // 未验证时禁用主配置区域
+  // 已验证则隐藏密钥区域，未验证则禁用主配置
+  html.replace("%HIDE_AUTH%", auth_verified ? "hidden" : "");
   html.replace("%DISABLE_MAIN%", auth_verified ? "" : "disabled-section");
   
   // 替换配置值
@@ -754,7 +768,8 @@ void handleSave() {
   delay(1000);
   ESP.restart();
 }
-// 密钥验证处理
+
+// 密钥验证处理（保存验证通过的密钥）
 void handleVerifyKey() {
   if (server.hasArg("lang")) current_lang = server.arg("lang");
   LanguageStrings lang = getLangStrings();
@@ -766,9 +781,11 @@ void handleVerifyKey() {
   // 使用新的验证函数（异或解密后对比）
   if (verifyAuthKey(input_key)) {
     auth_verified = true;
+    saved_auth_key = input_key; // 保存验证通过的密钥
     prefs.putBool("auth_verified", true); // 保存验证状态
+    prefs.putString("saved_auth_key", input_key); // 保存密钥到Flash
     status = "<div class='status success'>" + String(lang.auth_success) + "</div>";
-    Serial.println("Authentication successful!");
+    Serial.println("Authentication successful! Key saved.");
   } else {
     auth_verified = false;
     status = "<div class='status error'>" + String(lang.auth_failed) + "</div>";
@@ -821,6 +838,7 @@ void setupWebServer() {
   server.begin();
   Serial.println("Web Server Started");
 }
+
 // 同步NTP时间（修正时区配置）
 bool syncNTPTime() {
   if (WiFi.status() != WL_CONNECTED) return false;
@@ -934,12 +952,22 @@ void setup() {
   mac_clean.toUpperCase();
   auth_key = generateAuthKey(mac_clean); // 生成反向+异或混淆的密钥
 
+  // 读取保存的验证状态和密钥
+  auth_verified = prefs.getBool("auth_verified", false);
+  saved_auth_key = prefs.getString("saved_auth_key", "");
+  
+  // 自动验证保存的密钥（防止密钥失效）
+  if (auth_verified && !saved_auth_key.isEmpty()) {
+    autoVerifySavedKey();
+  }
+
   Serial.printf("Device MAC: %s\n", device_mac.c_str());
   Serial.printf("Original Reversed MAC: ");
   String original_reversed = "";
   for (int i = mac_clean.length() - 1; i >= 0; i--) original_reversed += mac_clean[i];
   Serial.println(original_reversed);
   Serial.printf("Encrypted Auth Key: %s\n", auth_key.c_str()); // 混淆后的密钥
+  Serial.printf("Saved Auth Key: %s\n", saved_auth_key.c_str());
   Serial.printf("Auth Status: %s\n", auth_verified ? "Verified" : "Not Verified");
   
   // 读取配置
