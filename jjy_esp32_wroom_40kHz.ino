@@ -115,7 +115,7 @@ struct LanguageStrings {
 };
 
 LanguageStrings lang_en = {
-  "ClockWave Configuration", "ClockWave WiFi & Protocol", "WiFi SSID:", "WiFi Password:", 
+  "ClockWaveXmitter Configuration", "ClockWaveXmitter WiFi & Protocol", "WiFi SSID:", "WiFi Password:", 
   "Timezone Offset (hours):", "Time Signal Protocol:", 
   "Save Configuration", "Sync NTP Time Now", "Restart Device",
   "Configuration saved! Restarting...", "Cannot sync NTP - WiFi not connected!",
@@ -133,7 +133,7 @@ LanguageStrings lang_en = {
 };
 
 LanguageStrings lang_cn = {
-  "ClockWave 配置页面", "ClockWave 参数配置", "WiFi名称:", "WiFi密码:", 
+  "ClockWaveXmitter 配置页面", "ClockWaveXmitter 参数配置", "WiFi名称:", "WiFi密码:", 
   "时区偏移 (小时):", "授时协议选择:",
   "保存配置", "立即同步NTP时间", "重启设备",
   "配置保存成功！设备将重启...", "无法同步NTP - WiFi未连接！",
