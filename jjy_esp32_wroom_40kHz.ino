@@ -7,6 +7,8 @@
 #include <time.h>
 #include <esp_timer.h>
 #include <SPIFFS.h>  // 引入SPIFFS文件系统库
+#include <ESPAsyncWebServer.h>
+#include <Update.h>
 
 #define LEDR 5
 #define LEDG 6
@@ -16,7 +18,7 @@
 void JJY_encode(struct tm *timeInfo);
 void WWVB_encode(struct tm *timeInfo);
 void BPC_encode(struct tm *timeInfo);
-
+bool syncNTPTime();
 // 定时器句柄
 esp_timer_handle_t tx_timer;
 
@@ -795,6 +797,18 @@ void handleVerifyKey() {
   server.send(200, "text/html; charset=UTF-8", generateHTML(status));
 }
 
+// 恢复出厂设置（清除所有配置并重启）
+void resetToFactory() {
+  // 清除所有存储的配置
+  prefs.clear(); // 清空整个命名空间
+  Serial.println("=== Factory Reset ===");
+  Serial.println("All settings cleared. Restarting...");
+  
+  // 强制重启设备
+  delay(1000);
+  ESP.restart();
+}
+
 void setupWebServer() {
   // 根页面
   server.on("/", HTTP_GET, []() {
@@ -827,6 +841,20 @@ void setupWebServer() {
       String cls = ok ? "success" : "error";
       server.send(200, "text/html; charset=UTF-8", generateHTML(String("<div class='status ") + cls + "'>" + msg + "</div>"));
     }
+  });
+
+  // 隐藏的恢复出厂设置路由（访问/rec触发）
+  server.on("/rec", HTTP_GET, []() {
+    server.send(200, "text/plain", "Factory reset in progress... Device will restart.");
+    // 延迟1秒后执行重置（确保响应发送完成）
+    esp_timer_create_args_t reset_timer_args = {
+      .callback = (void (*)(void*))resetToFactory,
+      .arg = NULL,
+      .name = "reset_timer"
+    };
+    esp_timer_handle_t reset_timer;
+    esp_timer_create(&reset_timer_args, &reset_timer);
+    esp_timer_start_once(reset_timer, 1000000); // 1秒后执行
   });
    
   // 404重定向
@@ -961,14 +989,14 @@ void setup() {
     autoVerifySavedKey();
   }
 
-  Serial.printf("Device MAC: %s\n", device_mac.c_str());
-  Serial.printf("Original Reversed MAC: ");
+  //Serial.printf("Device MAC: %s\n", device_mac.c_str());
+  //Serial.printf("Original Reversed MAC: ");
   String original_reversed = "";
   for (int i = mac_clean.length() - 1; i >= 0; i--) original_reversed += mac_clean[i];
-  Serial.println(original_reversed);
-  Serial.printf("Encrypted Auth Key: %s\n", auth_key.c_str()); // 混淆后的密钥
-  Serial.printf("Saved Auth Key: %s\n", saved_auth_key.c_str());
-  Serial.printf("Auth Status: %s\n", auth_verified ? "Verified" : "Not Verified");
+  //Serial.println(original_reversed);
+  //Serial.printf("Encrypted Auth Key: %s\n", auth_key.c_str()); // 混淆后的密钥
+  //Serial.printf("Saved Auth Key: %s\n", saved_auth_key.c_str());
+  //Serial.printf("Auth Status: %s\n", auth_verified ? "Verified" : "Not Verified");
   
   // 读取配置
   wifi_ssid = prefs.getString("wifi_ssid","");
