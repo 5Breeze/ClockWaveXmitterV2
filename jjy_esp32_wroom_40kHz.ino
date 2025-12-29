@@ -55,7 +55,7 @@ bool config_mode = false;
 String current_lang = "en";
 
 // Web Server & WiFi
-String ap_ssid_base = "ClockWave-Config";  // 基础AP名称
+String ap_ssid_base = "CWXmitter";  // 基础AP名称
 String ap_ssid;                            // 动态生成带MAC的AP名称
 const char* ap_password = "12345678";
 WebServer server(80);
@@ -1045,3 +1045,4 @@ void loop() {
   // 小延迟，避免占用过高CPU
   delay(1);
 }
+
