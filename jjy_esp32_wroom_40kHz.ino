@@ -18,6 +18,7 @@
 void JJY_encode(struct tm *timeInfo);
 void WWVB_encode(struct tm *timeInfo);
 void BPC_encode(struct tm *timeInfo);
+void DCF_encode(struct tm *timeInfo);
 bool syncNTPTime();
 // 定时器句柄
 esp_timer_handle_t tx_timer;
@@ -41,7 +42,8 @@ enum Protocol {
   PROTO_JJY40 = 0,
   PROTO_JJY60 = 1,
   PROTO_WWVB  = 2,
-  PROTO_BPC   = 3
+  PROTO_BPC   = 3,
+  PROTO_DCF77  = 4
 };
 
 int8_t sg[60]; // 信号数据数组 (最大60秒)
@@ -229,6 +231,7 @@ const char* html_template = R"HTML(
                         <option value="1" %SEL_1%>JJY (60kHz) - Japan</option>
                         <option value="2" %SEL_2%>WWVB (60kHz) - USA</option>
                         <option value="3" %SEL_3%>BPC (68.5kHz) - China</option>
+                        <option value="4" %SEL_4%>DCF (77.5kHz) - Germany</option>
                     </select>
                 </div>
                 <button type="submit">%SAVE_BTN%</button>
@@ -348,6 +351,7 @@ void setupPWM(int protocol) {
     case PROTO_JJY60: freq = 60000; break;
     case PROTO_WWVB:  freq = 60000; break;
     case PROTO_BPC:   freq = 68500; break;
+    case PROTO_DCF77: freq = 77500; break;
   }
   // 配置LEDC：通道、频率、分辨率（8位）
   ledcSetup(ledChannel, freq, 8);
@@ -537,6 +541,93 @@ void BPC_encode(struct tm *timeInfo) {
     sg[19] = (((year >> 6) & 0x01) << 2) | parity_p2; // 仅用最低位（四进制0/1）
 }
 
+void DCF_encode(struct tm *timeInfo) {
+    memset(sg, 0, 60); // 初始化数组
+    int hour_24 = timeInfo->tm_hour;    // 24小时制小时(0-23)
+    int min = timeInfo->tm_min;         // 分钟(0-59)
+    int sec = timeInfo->tm_sec;         // 秒数(0-59) → 用于计算20秒段
+    int wday = (timeInfo->tm_wday == 0) ? 7 : timeInfo->tm_wday; // 星期(1-7，周日=7)
+    int day = timeInfo->tm_mday;        // 日期(1-31)
+    int mon = timeInfo->tm_mon + 1;     // 月份(1-12)
+    int year = (timeInfo->tm_year + 1900) % 100; // 年份(00-99)
+
+    // -------------------------- 0. 标志位结束位广播 --------------------------
+    sg[0] = 1;
+    sg[20] = 1;
+    sg[59] = -1;
+    // -------------------------- 1. 预警 / 天气片段 --------------------------
+    //sg1-14
+    //sg15-19
+    // -------------------------- 3. 分钟 / 小时 --------------------------
+    //分钟
+    sg[27] = min / 40;
+    sg[26] = (min % 40) / 20;
+    sg[25] = (min % 20) / 10;
+    sg[24] = (min % 10) / 8;
+    sg[23] = (min % 8) / 4;
+    sg[22] = (min % 4) / 2;
+    sg[21] = min % 2;
+
+    // P1奇偶校验（偶校验：覆盖21-27秒位）
+    int parity_p1 = 0;
+    for(int i=21; i<=27; i++) {
+        parity_p1 += count_ones(sg[i]);
+    }
+    parity_p1 = (parity_p1 % 2) == 0 ? 0 : 1;
+    sg[28] = parity_p1;
+
+    //小时
+    sg[34] = hour_24 / 20;
+    sg[33] = (hour_24 % 20) / 10;
+    sg[32] = (hour_24 % 10) / 8;
+    sg[31] = (hour_24 % 8) / 4;
+    sg[30] = (hour_24 % 4) / 2;
+    sg[29] = hour_24 % 2;
+
+    // P2奇偶校验（偶校验：覆盖29-34秒位）
+    int parity_p2 = 0;
+    for(int i=29; i<=34; i++) {
+        parity_p2 += count_ones(sg[i]);
+    }
+    parity_p2 = (parity_p2 % 2) == 0 ? 0 : 1;
+    sg[35] = parity_p2;
+
+    // -------------------------- 4. 月 / 年 / 日 --------------------------
+    //日期
+    sg[41] = day / 20;
+    sg[40] = (day % 20) / 10;
+    sg[39] = (day % 10) / 8;
+    sg[38] = (day % 8) / 4;
+    sg[37] = (day % 4) / 2;
+    sg[36] = day % 2;
+    //星期
+    sg[44] = wday / 4;
+    sg[43] = (wday % 4) / 2;
+    sg[42] = wday % 2;
+    //月份
+    sg[49] = mon / 10;
+    sg[48] = (mon % 10) / 8;
+    sg[47] = (mon % 8) / 4;
+    sg[46] = (mon % 4) / 2;
+    sg[45] = mon % 2;
+    //年份
+    sg[57] = year / 80;
+    sg[56] = (year % 80) / 40;
+    sg[55] = (year % 40) / 20;
+    sg[54] = (year % 20) / 10;
+    sg[53] = (year % 10) / 8;
+    sg[52] = (year % 8) / 4;
+    sg[51] = (year % 4) / 2;
+    sg[50] = year % 2;
+    // P3奇偶校验（偶校验：覆盖36-57秒位）
+    int parity_p3 = 0;
+    for(int i=36; i<=57; i++) {
+        parity_p3 += count_ones(sg[i]);
+    }
+    parity_p3 = (parity_p3 % 2) == 0 ? 0 : 1;
+    sg[58] = parity_p3;
+}
+
 // ==========================================
 // 信号发射逻辑 (核心，移到loop中执行，避免中断不安全)
 // 核心逻辑：每秒切换信号值，秒内前T毫秒低电平（载波关），后(1000-T)毫秒高电平（载波开）
@@ -587,12 +678,15 @@ void processSignalTransmission() {
                       timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec, now_sec/20);
       }
     } else {
-      // WWVB/JJY每分钟（0秒）更新一次完整帧
+      // WWVB/JJY/DCF每分钟（0秒）更新一次完整帧
       if (now_sec == 0) {
         if (selected_protocol == PROTO_WWVB) {
           WWVB_encode(&timeInfo);
-        } else {
+        } else if (selected_protocol == PROTO_JJY40 || selected_protocol == PROTO_JJY60) {
           JJY_encode(&timeInfo);
+        }
+        else if (selected_protocol == PROTO_DCF77) {
+          DCF_encode(&timeInfo);
         }
         Serial.printf("\n[%s] Frame Update: %02d:%02d:%02d\n", 
                       (selected_protocol == PROTO_WWVB) ? "WWVB" : "JJY",
@@ -664,6 +758,22 @@ void processSignalTransmission() {
         low_duration = 200;
       }
       carrier_on = (ms_in_sec_local < (1000 - low_duration));
+      break;}
+
+    case PROTO_DCF77:{
+      curr_val = sg[current_sec_index];
+      // DCF77规则：
+      // val=1：800ms高，200ms低 → 低电平持续200ms
+      // val=0：900ms高，100ms低 → 低电平持续100ms
+      // val=-1：1000ms高
+      if (curr_val == 1) {
+        low_duration = 200;
+      } else if (curr_val == 0) {
+        low_duration = 100;
+      } else {
+        low_duration = 0;
+      } 
+      carrier_on = (ms_in_sec_local >= low_duration);
       break;}
 
     default:{
