@@ -554,7 +554,7 @@ void BPC_encode(struct tm *timeInfo) {
     int year = (timeInfo->tm_year + 1900) % 100; // 年份(00-99)
     
     // 12小时制转换（BPC主要用12小时制）
-    int hour_12 = (hour_24 % 12) == 0 ? 12 : (hour_24 % 12); // 1-12（修正12点为12而非0）
+    int hour_12 = hour_24 % 12; // 0-11
     int is_pm = (hour_24 >= 12) ? 1 : 0;                      // 1=下午,0=上午
 
     // -------------------------- 2. 自动计算当前20秒段 --------------------------
@@ -583,10 +583,10 @@ void BPC_encode(struct tm *timeInfo) {
     // 02秒位：保留位（Unused，固定0）
     sg[2] = 0;
 
-    // 03-04秒位：小时（12小时制，1-12）→ 6bit编码（实际用4bit）
+    // 03-04秒位：小时（12小时制，0-11）→ 6bit编码（实际用4bit）
     sg[3] = (hour_12 >> 2) & 0x03;  // 权重8(bit3) + 4(bit2)
     sg[4] = hour_12 & 0x03;          // 权重2(bit1) + 1(bit0)
-
+    Serial.printf("Hour 12: %d, Encoded: %d %d\n", hour_12, sg[3], sg[4]);
     // 05-07秒位：分钟（0-59）→ 6bit编码
     sg[5] = (min >> 4) & 0x03;       // 权重32(bit5) + 16(bit4)
     sg[6] = (min >> 2) & 0x03;       // 权重8(bit3) + 4(bit2)
