@@ -19,6 +19,7 @@ void JJY_encode(struct tm *timeInfo);
 void WWVB_encode(struct tm *timeInfo);
 void BPC_encode(struct tm *timeInfo);
 void DCF_encode(struct tm *timeInfo);
+void MSF_encode(struct tm *timeInfo);
 bool syncNTPTime();
 // 定时器句柄
 esp_timer_handle_t tx_timer;
@@ -43,7 +44,8 @@ enum Protocol {
   PROTO_JJY60 = 1,
   PROTO_WWVB  = 2,
   PROTO_BPC   = 3,
-  PROTO_DCF77  = 4
+  PROTO_DCF77  = 4,
+  PROTO_MSF   = 5
 };
 
 int8_t sg[60]; // 信号数据数组 (最大60秒)
@@ -232,6 +234,7 @@ const char* html_template = R"HTML(
                         <option value="2" %SEL_2%>WWVB (60kHz) - USA</option>
                         <option value="3" %SEL_3%>BPC (68.5kHz) - China</option>
                         <option value="4" %SEL_4%>DCF (77.5kHz) - Germany</option>
+                        <option value="5" %SEL_5%>MSF (60kHz) - UK</option>
                     </select>
                 </div>
                 <button type="submit">%SAVE_BTN%</button>
@@ -352,6 +355,7 @@ void setupPWM(int protocol) {
     case PROTO_WWVB:  freq = 60000; break;
     case PROTO_BPC:   freq = 68500; break;
     case PROTO_DCF77: freq = 77500; break;
+    case PROTO_MSF:   freq = 60000; break;
   }
   // 配置LEDC：通道、频率、分辨率（8位）
   ledcSetup(ledChannel, freq, 8);
@@ -413,28 +417,89 @@ void WWVB_encode(struct tm *timeInfo) {
   const int8_t M = -1; // Marker
   sg[0]=sg[9]=sg[19]=sg[29]=sg[39]=sg[49]=sg[59] = M;
    
-  int min = timeInfo->tm_min;
-  int hour = timeInfo->tm_hour;
-  int day = timeInfo->tm_yday + 1;
-  int year = (timeInfo->tm_year + 1900) % 100;
+    int hour_24 = timeInfo->tm_hour;    // 24小时制小时(0-23)
+    int min = timeInfo->tm_min;         // 分钟(0-59)
+    int sec = timeInfo->tm_sec;         // 秒数(0-59) → 用于计算20秒段
+    int wday = (timeInfo->tm_wday == 0) ? 7 : timeInfo->tm_wday; // 星期(1-7，周日=7)
+    int day = timeInfo->tm_mday;        // 日期(1-31)
+    int mon = timeInfo->tm_mon + 1;     // 月份(1-12)
+    int year = (timeInfo->tm_year + 1900) % 100; // 年份(00-99)
+    int day_of_year = timeInfo->tm_yday +1;  // 1–366
    
   // 分钟编码
-  sg[1] = (min/10)>>2 & 1; sg[2] = (min/10)>>1 & 1; sg[3] = (min/10) & 1;
-  sg[5] = (min%10)>>3 & 1; sg[6] = (min%10)>>2 & 1; sg[7] = (min%10)>>1 & 1; sg[8] = (min%10) & 1;
-   
+  sg[1] = min / 40;
+  sg[2] = (min % 40) / 20;
+  sg[3] = (min % 20) / 10;
+
+  sg[4] = 0;
+
+  sg[5] = (min % 10) / 8;
+  sg[6] = (min % 8) / 4;
+  sg[7] = (min % 4) / 2;
+  sg[8] = min % 2;
+
   // 小时编码
-  sg[12] = (hour/10)>>1 & 1; sg[13] = (hour/10) & 1;
-  sg[15] = (hour%10)>>3 & 1; sg[16] = (hour%10)>>2 & 1; sg[17] = (hour%10)>>1 & 1; sg[18] = (hour%10) & 1;
-   
-  // 年积日编码
-  int d_h = day / 100; int d_t = (day % 100) / 10; int d_u = day % 10;
-  sg[22] = (d_h>>1)&1; sg[23] = d_h&1;
-  sg[25] = (d_t>>3)&1; sg[26] = (d_t>>2)&1; sg[27] = (d_t>>1)&1; sg[28] = d_t&1;
-  sg[30] = (d_u>>3)&1; sg[31] = (d_u>>2)&1; sg[32] = (d_u>>1)&1; sg[33] = d_u&1;
-   
+  sg[12] = hour_24 / 20;
+  sg[13] = (hour_24 % 20) / 10;
+  sg[14] = 0;
+  sg[15] = (hour_24 % 10) / 8;
+  sg[16] = (hour_24 % 8) / 4;
+  sg[17] = (hour_24 % 4) / 2;
+  sg[18] = hour_24 % 2;
+
+  sg[20] = 0;
+  sg[21] = 0;
+
+  // 年月日编码
+  sg[22] = day_of_year / 200;
+  sg[23] = (day_of_year % 200) / 100;
+
+  sg[24] = 0;
+
+  sg[25] = (day_of_year % 100) / 80;
+  sg[26] = (day_of_year % 80) / 40;
+  sg[27] = (day_of_year % 40) / 20;
+  sg[28] = (day_of_year % 20) / 10;
+  sg[30] = (day_of_year % 10) / 8;
+  sg[31] = (day_of_year % 8) / 4;
+  sg[32] = (day_of_year % 4) / 2;
+  sg[33] = day_of_year % 2;
+
+  sg[34] = 0;
+  sg[35] = 0;
+
+  //DUT
+  sg[36] = 0;
+  sg[37] = 1;
+  sg[38] = 0;
+
+  sg[40] = 0;
+  sg[41] = 0;
+  sg[42] = 0;
+  sg[43] = 0;
+
+  sg[44] = 0;
   // 年份编码
-  sg[45] = (year/10)>>3 & 1; sg[46] = (year/10)>>2 & 1; sg[47] = (year/10)>>1 & 1; sg[48] = (year/10) & 1;
-  sg[50] = (year%10)>>3 & 1; sg[51] = (year%10)>>2 & 1; sg[52] = (year%10)>>1 & 1; sg[53] = (year%10) & 1;
+  sg[45] = year / 80;
+  sg[46] = (year % 80) / 40;
+  sg[47] = (year % 40) / 20;
+  sg[48] = (year % 20) / 10;
+  sg[50] = (year % 10) / 8;
+  sg[51] = (year % 8) / 4;
+  sg[52] = (year % 4) / 2;
+  sg[53] = year % 2;
+
+  sg[54] = 0;
+  //LYI
+  if((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))
+    sg[55] = 1;
+  else
+    sg[55] = 0;
+  //LSW
+  sg[56] = 0;
+  //DST
+  sg[57] = 0;
+  sg[58] = 0;
 }
 
 // 工具函数：统计一个整数二进制中1的个数
@@ -628,6 +693,79 @@ void DCF_encode(struct tm *timeInfo) {
     sg[58] = parity_p3;
 }
 
+void MSF_encode(struct tm *timeInfo) {
+    memset(sg, 0, 60); // 初始化数组
+    int hour_24 = timeInfo->tm_hour;    // 24小时制小时(0-23)
+    int min = timeInfo->tm_min;         // 分钟(0-59)
+    int sec = timeInfo->tm_sec;         // 秒数(0-59) → 用于计算20秒段
+    int wday = (timeInfo->tm_wday == 0) ? 7 : timeInfo->tm_wday; // 星期(1-7，周日=7)
+    int day = timeInfo->tm_mday;        // 日期(1-31)
+    int mon = timeInfo->tm_mon + 1;     // 月份(1-12)
+    int year = (timeInfo->tm_year + 1900) % 100; // 年份(00-99)
+    // MSF编码逻辑
+    sg[0] = -1; // 标志位
+    sg[1] = -2; // 同步位
+    
+    //年份
+    sg[17] = year / 80;
+    sg[18] = (year % 80) / 40;
+    sg[19] = (year % 40) / 20;
+    sg[20] = (year % 20) / 10;
+    sg[21] = (year % 10) / 8;
+    sg[22] = (year % 8) / 4;
+    sg[23] = (year % 4) / 2;
+    sg[24] = year % 2;
+
+    //月
+    sg[25] = mon / 10;
+    sg[26] = (mon % 10) / 8;
+    sg[27] = (mon % 8) / 4;
+    sg[28] = (mon % 4) / 2;
+    sg[29] = mon % 2;
+
+    //日
+    sg[30] = day / 20;
+    sg[31] = (day % 20) / 10;
+    sg[32] = (day % 10) / 8;
+    sg[33] = (day % 8) / 4;
+    sg[34] = (day % 4) / 2;
+    sg[35] = day % 2;
+
+    //星期
+    sg[36] = wday / 4;
+    sg[37] = (wday % 4) / 2;
+    sg[38] = wday % 2;
+
+    //小时
+    sg[39] = hour_24 / 20;
+    sg[40] = (hour_24 % 20) / 10;
+    sg[41] = (hour_24 % 10) / 8;
+    sg[42] = (hour_24 % 8) / 4;
+    sg[43] = (hour_24 % 4) / 2;
+    sg[44] = hour_24 % 2;
+
+    //分钟
+    sg[45] = min / 40;
+    sg[46] = (min % 40) / 20;
+    sg[47] = (min % 20) / 10;
+    sg[48] = (min % 10) / 8;
+    sg[49] = (min % 8) / 4;
+    sg[50] = (min % 4) / 2;
+    sg[51] = min % 2;
+
+    //固定
+    sg[52] = 0;
+    sg[53] = 1;
+    sg[54] = 1;
+    sg[55] = 1;
+    sg[56] = 1;
+    sg[57] = 1;
+    sg[58] = 1;
+    sg[59] = 0;
+
+
+}
+
 // ==========================================
 // 信号发射逻辑 (核心，移到loop中执行，避免中断不安全)
 // 核心逻辑：每秒切换信号值，秒内前T毫秒低电平（载波关），后(1000-T)毫秒高电平（载波开）
@@ -773,6 +911,23 @@ void processSignalTransmission() {
       } else {
         low_duration = 0;
       } 
+      carrier_on = (ms_in_sec_local >= low_duration);
+      break;}
+
+    case PROTO_MSF:{
+      curr_val = sg[current_sec_index];
+      // MSF规则（待完善，暂按WWVB处理）：
+      if (curr_val == -1) {
+        low_duration = 500;
+      }
+      else if (curr_val == -2) {
+        low_duration = 100;
+      }
+      else if (curr_val == 1) {
+        low_duration = 200;
+      } else {
+        low_duration = 100;
+      }
       carrier_on = (ms_in_sec_local >= low_duration);
       break;}
 
