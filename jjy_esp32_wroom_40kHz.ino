@@ -14,6 +14,8 @@
 #define LEDG 6
 #define LEDB 7
 
+#define DEBUG 1
+
 // 函数前置声明（解决编译错误）
 void JJY_encode(struct tm *timeInfo);
 void WWVB_encode(struct tm *timeInfo);
@@ -56,7 +58,7 @@ String wifi_password = "";
 float timezone_offset = 8.0f;
 int selected_protocol = PROTO_JJY40;
 bool config_mode = false;
-String current_lang = "en";
+String current_lang = "cn";
 
 // Web Server & WiFi
 String ap_ssid_base = "CWXmitter";  // 基础AP名称
@@ -321,11 +323,11 @@ bool verifyAuthKey(String input) {
   for (int i = mac_clean.length() - 1; i >= 0; i--) {
     original_reversed += mac_clean[i];
   }
-  
+  #ifdef DEBUG
   // 调试打印（方便定位）
   Serial.printf("Original Reversed MAC: %s\n", original_reversed.c_str());
   Serial.printf("Decrypted Input Key: %s\n", decrypted_reversed.c_str());
-  
+  #endif
   // 4. 对比解密后的值与原始反向MAC
   return (decrypted_reversed == original_reversed);
 }
@@ -334,10 +336,14 @@ bool verifyAuthKey(String input) {
 void autoVerifySavedKey() {
   if (saved_auth_key.length() == 12) {
     auth_verified = verifyAuthKey(saved_auth_key);
+    #ifdef DEBUG
     Serial.printf("Auto Verify: %s\n", auth_verified ? "Success" : "Failed");
+    #endif
   } else {
     auth_verified = false;
+    #ifdef DEBUG
     Serial.println("Auto Verify: No saved key found");
+    #endif
   }
 }
 
@@ -361,8 +367,10 @@ void setupPWM(int protocol) {
   ledcSetup(ledChannel, freq, 8);
   ledcAttachPin(ledPin, ledChannel);
   ledcWrite(ledChannel, 0); // 初始关闭
+  #ifdef DEBUG
   Serial.printf("PWM Configured: Protocol %d, Freq %d Hz\n", protocol, freq);
-}
+  #endif
+} 
 
 // ==========================================
 // 编码逻辑 (JJY / WWVB / BPC)
@@ -417,53 +425,71 @@ void WWVB_encode(struct tm *timeInfo) {
   const int8_t M = -1; // Marker
   sg[0]=sg[9]=sg[19]=sg[29]=sg[39]=sg[49]=sg[59] = M;
    
-    int hour_24 = timeInfo->tm_hour;    // 24小时制小时(0-23)
-    int min = timeInfo->tm_min;         // 分钟(0-59)
-    int sec = timeInfo->tm_sec;         // 秒数(0-59) → 用于计算20秒段
-    int wday = (timeInfo->tm_wday == 0) ? 7 : timeInfo->tm_wday; // 星期(1-7，周日=7)
-    int day = timeInfo->tm_mday;        // 日期(1-31)
-    int mon = timeInfo->tm_mon + 1;     // 月份(1-12)
-    int year = (timeInfo->tm_year + 1900) % 100; // 年份(00-99)
-    int day_of_year = timeInfo->tm_yday +1;  // 1–366
+    time_t raw = mktime(timeInfo);  // tm → time_t（秒）
+    raw += 60;                     // 加 60 秒（1 分钟）
+    struct tm newTime;
+    localtime_r(&raw, &newTime);   // 转回 tm 结构体
+
+    int hour_24 = newTime.tm_hour;    // 24小时制小时(0-23)
+    int min = newTime.tm_min;         // 分钟(0-59)
+    int sec = newTime.tm_sec;         // 秒数(0-59) → 用于计算20秒段
+    int wday = (newTime.tm_wday == 0) ? 7 : newTime.tm_wday; // 星期(1-7，周日=7)
+    int day = newTime.tm_mday;        // 日期(1-31)
+    int mon = newTime.tm_mon + 1;     // 月份(1-12)
+    int year = (newTime.tm_year + 1900) % 100; // 年份(00-99)
+    int day_of_year = newTime.tm_yday +1;  // 1–366
    
-  // 分钟编码
-  sg[1] = min / 40;
-  sg[2] = (min % 40) / 20;
-  sg[3] = (min % 20) / 10;
+  // 分钟编码 BCD
+  // 分钟十位 BCD (bits 1-3)
+  sg[1] = ((min / 10) >> 2) & 1;  // bit 2
+  sg[2] = ((min / 10) >> 1) & 1;  // bit 1
+  sg[3] = (min / 10) & 1;         // bit 0
 
   sg[4] = 0;
 
-  sg[5] = (min % 10) / 8;
-  sg[6] = (min % 8) / 4;
-  sg[7] = (min % 4) / 2;
-  sg[8] = min % 2;
+  // 分钟个位 BCD (bits 5-8)
+  sg[5] = ((min % 10) >> 3) & 1;  // bit 3
+  sg[6] = ((min % 10) >> 2) & 1;  // bit 2
+  sg[7] = ((min % 10) >> 1) & 1;  // bit 1
+  sg[8] = (min % 10) & 1;         // bit 0
 
-  // 小时编码
-  sg[12] = hour_24 / 20;
-  sg[13] = (hour_24 % 20) / 10;
+  sg[10] = 0;
+  sg[11] = 0;
+
+  // 小时编码 BCD
+  // 小时十位 BCD (bits 12-13)
+  sg[12] = ((hour_24 / 10) >> 1) & 1;  // bit 1
+  sg[13] = (hour_24 / 10) & 1;         // bit 0
+
   sg[14] = 0;
-  sg[15] = (hour_24 % 10) / 8;
-  sg[16] = (hour_24 % 8) / 4;
-  sg[17] = (hour_24 % 4) / 2;
-  sg[18] = hour_24 % 2;
+
+  // 小时个位 BCD (bits 15-18)
+  sg[15] = ((hour_24 % 10) >> 3) & 1;  // bit 3
+  sg[16] = ((hour_24 % 10) >> 2) & 1;  // bit 2
+  sg[17] = ((hour_24 % 10) >> 1) & 1;  // bit 1
+  sg[18] = (hour_24 % 10) & 1;         // bit 0
 
   sg[20] = 0;
   sg[21] = 0;
 
-  // 年月日编码
-  sg[22] = day_of_year / 200;
-  sg[23] = (day_of_year % 200) / 100;
+  // 年月日编码 BCD
+  // 百位
+  sg[22] = (day_of_year / 100 >> 1) & 0x01;  // bit 1
+  sg[23] = (day_of_year / 100) & 0x01;       // bit 0
 
   sg[24] = 0;
 
-  sg[25] = (day_of_year % 100) / 80;
-  sg[26] = (day_of_year % 80) / 40;
-  sg[27] = (day_of_year % 40) / 20;
-  sg[28] = (day_of_year % 20) / 10;
-  sg[30] = (day_of_year % 10) / 8;
-  sg[31] = (day_of_year % 8) / 4;
-  sg[32] = (day_of_year % 4) / 2;
-  sg[33] = day_of_year % 2;
+  // 十位
+  sg[25] = (((day_of_year / 10) % 10) >> 3) & 0x01; // bit 3
+  sg[26] = (((day_of_year / 10) % 10) >> 2) & 0x01; // bit 2
+  sg[27] = (((day_of_year / 10) % 10) >> 1) & 0x01; // bit 1
+  sg[28] = ((day_of_year / 10) % 10) & 0x01;        // bit 0
+
+  // 个位
+  sg[30] = ((day_of_year % 10) >> 3) & 0x01; // bit 3
+  sg[31] = ((day_of_year % 10) >> 2) & 0x01; // bit 2
+  sg[32] = ((day_of_year % 10) >> 1) & 0x01; // bit 1
+  sg[33] = (day_of_year % 10) & 0x01;       // bit 0
 
   sg[34] = 0;
   sg[35] = 0;
@@ -479,15 +505,18 @@ void WWVB_encode(struct tm *timeInfo) {
   sg[43] = 0;
 
   sg[44] = 0;
-  // 年份编码
-  sg[45] = year / 80;
-  sg[46] = (year % 80) / 40;
-  sg[47] = (year % 40) / 20;
-  sg[48] = (year % 20) / 10;
-  sg[50] = (year % 10) / 8;
-  sg[51] = (year % 8) / 4;
-  sg[52] = (year % 4) / 2;
-  sg[53] = year % 2;
+  // 年份编码 BCD
+  // 年份十位 BCD (bits 45-48)
+  sg[45] = ((year / 10) >> 3) & 0x01; // bit 3
+  sg[46] = ((year / 10) >> 2) & 0x01; // bit 2
+  sg[47] = ((year / 10) >> 1) & 0x01; // bit 1
+  sg[48] = (year / 10) & 0x01;       // bit 0
+
+  // 年份个位 BCD (bits 50-53)
+  sg[50] = ((year % 10) >> 3) & 0x01; // bit 3
+  sg[51] = ((year % 10) >> 2) & 0x01; // bit 2
+  sg[52] = ((year % 10) >> 1) & 0x01; // bit 1
+  sg[53] = (year % 10) & 0x01;       // bit 0
 
   sg[54] = 0;
   //LYI
@@ -608,30 +637,38 @@ void BPC_encode(struct tm *timeInfo) {
 
 void DCF_encode(struct tm *timeInfo) {
     memset(sg, 0, 60); // 初始化数组
-    int hour_24 = timeInfo->tm_hour;    // 24小时制小时(0-23)
-    int min = timeInfo->tm_min;         // 分钟(0-59)
-    int sec = timeInfo->tm_sec;         // 秒数(0-59) → 用于计算20秒段
-    int wday = (timeInfo->tm_wday == 0) ? 7 : timeInfo->tm_wday; // 星期(1-7，周日=7)
-    int day = timeInfo->tm_mday;        // 日期(1-31)
-    int mon = timeInfo->tm_mon + 1;     // 月份(1-12)
-    int year = (timeInfo->tm_year + 1900) % 100; // 年份(00-99)
+
+    time_t raw = mktime(timeInfo);  // tm → time_t（秒）
+    raw += 60;                     // 加 60 秒（1 分钟）
+    struct tm newTime;
+    localtime_r(&raw, &newTime);   // 转回 tm 结构体
+
+    int hour_24 = newTime.tm_hour;    // 24小时制小时(0-23)
+    int min = newTime.tm_min;         // 分钟(0-59)
+    int sec = newTime.tm_sec;         // 秒数(0-59) → 用于计算20秒段
+    int wday = (newTime.tm_wday == 0) ? 7 : newTime.tm_wday; // 星期(1-7，周日=7)
+    int day = newTime.tm_mday;        // 日期(1-31)
+    int mon = newTime.tm_mon + 1;     // 月份(1-12)
+    int year = (newTime.tm_year + 1900) % 100; // 年份(00-99)
 
     // -------------------------- 0. 标志位结束位广播 --------------------------
-    sg[0] = 1;
+    sg[0] = 0;
     sg[20] = 1;
     sg[59] = -1;
     // -------------------------- 1. 预警 / 天气片段 --------------------------
     //sg1-14
     //sg15-19
     // -------------------------- 3. 分钟 / 小时 --------------------------
-    //分钟
-    sg[27] = min / 40;
-    sg[26] = (min % 40) / 20;
-    sg[25] = (min % 20) / 10;
-    sg[24] = (min % 10) / 8;
-    sg[23] = (min % 8) / 4;
-    sg[22] = (min % 4) / 2;
-    sg[21] = min % 2;
+    //分钟 BCD编码
+    // 分钟个位 BCD (bits 21-24)
+    sg[21] = (min % 10) & 0x01;       // bit 0
+    sg[22] = ((min % 10) >> 1) & 0x01; // bit 1
+    sg[23] = ((min % 10) >> 2) & 0x01; // bit 2
+    sg[24] = ((min % 10) >> 3) & 0x01; // bit 3
+    // 分钟十位 BCD (bits 25-27)
+    sg[25] = (min / 10) & 0x01;       // bit 0
+    sg[26] = ((min / 10) >> 1) & 0x01; // bit 1
+    sg[27] = ((min / 10) >> 2) & 0x01; // bit 2
 
     // P1奇偶校验（偶校验：覆盖21-27秒位）
     int parity_p1 = 0;
@@ -641,13 +678,15 @@ void DCF_encode(struct tm *timeInfo) {
     parity_p1 = (parity_p1 % 2) == 0 ? 0 : 1;
     sg[28] = parity_p1;
 
-    //小时
-    sg[34] = hour_24 / 20;
-    sg[33] = (hour_24 % 20) / 10;
-    sg[32] = (hour_24 % 10) / 8;
-    sg[31] = (hour_24 % 8) / 4;
-    sg[30] = (hour_24 % 4) / 2;
-    sg[29] = hour_24 % 2;
+    //小时 BCD编码
+    // 小时个位 BCD (bits 29-32)
+    sg[29] = (hour_24 % 10) & 0x01;       // bit 0
+    sg[30] = ((hour_24 % 10) >> 1) & 0x01; // bit 1
+    sg[31] = ((hour_24 % 10) >> 2) & 0x01; // bit 2
+    sg[32] = ((hour_24 % 10) >> 3) & 0x01; // bit 3
+    // 小时十位 BCD (bits 33-34)
+    sg[33] = (hour_24 / 10) & 0x01;       // bit 0
+    sg[34] = ((hour_24 / 10) >> 1) & 0x01; // bit 1
 
     // P2奇偶校验（偶校验：覆盖29-34秒位）
     int parity_p2 = 0;
@@ -658,32 +697,38 @@ void DCF_encode(struct tm *timeInfo) {
     sg[35] = parity_p2;
 
     // -------------------------- 4. 月 / 年 / 日 --------------------------
-    //日期
-    sg[41] = day / 20;
-    sg[40] = (day % 20) / 10;
-    sg[39] = (day % 10) / 8;
-    sg[38] = (day % 8) / 4;
-    sg[37] = (day % 4) / 2;
-    sg[36] = day % 2;
+    //日期 BCD编码
+    // 日期个位 BCD (bits 36-39)
+    sg[36] = (day % 10) & 0x01;       // bit 0
+    sg[37] = ((day % 10) >> 1) & 0x01; // bit 1
+    sg[38] = ((day % 10) >> 2) & 0x01; // bit 2
+    sg[39] = ((day % 10) >> 3) & 0x01; // bit 3
+    // 日期十位 BCD (bits 40-41)
+    sg[40] = (day / 10) & 0x01;       // bit 0
+    sg[41] = ((day / 10) >> 1) & 0x01; // bit 1
     //星期
     sg[44] = wday / 4;
     sg[43] = (wday % 4) / 2;
     sg[42] = wday % 2;
-    //月份
-    sg[49] = mon / 10;
-    sg[48] = (mon % 10) / 8;
-    sg[47] = (mon % 8) / 4;
-    sg[46] = (mon % 4) / 2;
-    sg[45] = mon % 2;
-    //年份
-    sg[57] = year / 80;
-    sg[56] = (year % 80) / 40;
-    sg[55] = (year % 40) / 20;
-    sg[54] = (year % 20) / 10;
-    sg[53] = (year % 10) / 8;
-    sg[52] = (year % 8) / 4;
-    sg[51] = (year % 4) / 2;
-    sg[50] = year % 2;
+    //月份 BCD编码
+    // 月份个位 BCD (bits 45-48)
+    sg[45] = (mon % 10) & 0x01;       // bit 0
+    sg[46] = ((mon % 10) >> 1) & 0x01; // bit 1
+    sg[47] = ((mon % 10) >> 2) & 0x01; // bit 2
+    sg[48] = ((mon % 10) >> 3) & 0x01; // bit 3
+    // 月份十位 BCD (bit 49)
+    sg[49] = (mon / 10) & 0x01;       // bit 0
+    //年份 BCD编码
+    // 年份个位 BCD (bits 50-53)
+    sg[50] = (year % 10) & 0x01;       // bit 0
+    sg[51] = ((year % 10) >> 1) & 0x01; // bit 1
+    sg[52] = ((year % 10) >> 2) & 0x01; // bit 2
+    sg[53] = ((year % 10) >> 3) & 0x01; // bit 3
+    // 年份十位 BCD (bits 54-57)
+    sg[54] = (year / 10) & 0x01;       // bit 0
+    sg[55] = ((year / 10) >> 1) & 0x01; // bit 1
+    sg[56] = ((year / 10) >> 2) & 0x01; // bit 2
+    sg[57] = ((year / 10) >> 3) & 0x01; // bit 3
     // P3奇偶校验（偶校验：覆盖36-57秒位）
     int parity_p3 = 0;
     for(int i=36; i<=57; i++) {
@@ -695,64 +740,84 @@ void DCF_encode(struct tm *timeInfo) {
 
 void MSF_encode(struct tm *timeInfo) {
     memset(sg, 0, 60); // 初始化数组
-    int hour_24 = timeInfo->tm_hour;    // 24小时制小时(0-23)
-    int min = timeInfo->tm_min;         // 分钟(0-59)
-    int sec = timeInfo->tm_sec;         // 秒数(0-59) → 用于计算20秒段
-    int wday = (timeInfo->tm_wday == 0) ? 7 : timeInfo->tm_wday; // 星期(1-7，周日=7)
-    int day = timeInfo->tm_mday;        // 日期(1-31)
-    int mon = timeInfo->tm_mon + 1;     // 月份(1-12)
-    int year = (timeInfo->tm_year + 1900) % 100; // 年份(00-99)
+
+    time_t raw = mktime(timeInfo);  // tm → time_t（秒）
+    raw += 60;                     // 加 60 秒（1 分钟）
+    struct tm newTime;
+    localtime_r(&raw, &newTime);   // 转回 tm 结构体
+
+    int hour_24 = newTime.tm_hour;    // 24小时制小时(0-23)
+    int min = newTime.tm_min;         // 分钟(0-59)
+    int sec = newTime.tm_sec;         // 秒数(0-59) → 用于计算20秒段
+    int wday = (newTime.tm_wday == 0) ? 7 : newTime.tm_wday; // 星期(1-7，周日=7)
+    int day = newTime.tm_mday;        // 日期(1-31)
+    int mon = newTime.tm_mon + 1;     // 月份(1-12)
+    int year = (newTime.tm_year + 1900) % 100; // 年份(00-99)
+
     // MSF编码逻辑
     sg[0] = -1; // 标志位
     sg[1] = -2; // 同步位
     
-    //年份
-    sg[17] = year / 80;
-    sg[18] = (year % 80) / 40;
-    sg[19] = (year % 40) / 20;
-    sg[20] = (year % 20) / 10;
-    sg[21] = (year % 10) / 8;
-    sg[22] = (year % 8) / 4;
-    sg[23] = (year % 4) / 2;
-    sg[24] = year % 2;
+    //年份 BCD
+    // 年份十位 BCD (bits 17-20)
+    sg[20] = (year / 10) & 0x01;       // bit 0
+    sg[19] = ((year / 10) >> 1) & 0x01; // bit 1
+    sg[18] = ((year / 10) >> 2) & 0x01; // bit 2
+    sg[17] = ((year / 10) >> 3) & 0x01; // bit 3
+    // 年份个位 BCD (bits 21-24)
+    sg[24] = (year % 10) & 0x01;       // bit 0
+    sg[23] = ((year % 10) >> 1) & 0x01; // bit 1
+    sg[22] = ((year % 10) >> 2) & 0x01; // bit 2
+    sg[21] = ((year % 10) >> 3) & 0x01; // bit 3
 
-    //月
-    sg[25] = mon / 10;
-    sg[26] = (mon % 10) / 8;
-    sg[27] = (mon % 8) / 4;
-    sg[28] = (mon % 4) / 2;
-    sg[29] = mon % 2;
+    //月 BCD
+    // 月份十位 BCD (bits 27-29)
+    sg[25] = (mon / 10) & 0x01;      // bit 0
+    // 月份个位 BCD (bits 25-26)
+    sg[29] = (mon % 10) & 0x01;       // bit 0
+    sg[28] = ((mon % 10) >> 1) & 0x01; // bit 1
+    sg[27] = ((mon % 10) >> 2) & 0x01; // bit 2
+    sg[26] = ((mon % 10) >> 3) & 0x01; // bit 3
 
-    //日
-    sg[30] = day / 20;
-    sg[31] = (day % 20) / 10;
-    sg[32] = (day % 10) / 8;
-    sg[33] = (day % 8) / 4;
-    sg[34] = (day % 4) / 2;
-    sg[35] = day % 2;
+    //日 BCD
+    // 日期十位 BCD (bits 30-32)
+    sg[31] = (day / 10) & 0x01;       // bit 0
+    sg[30] = ((day / 10) >> 1) & 0x01; // bit 1
+    // 日期个位 BCD (bits 33-35)
+    sg[35] = (day % 10) & 0x01;       // bit 0
+    sg[34] = ((day % 10) >> 1) & 0x01; // bit 1
+    sg[33] = ((day % 10) >> 2) & 0x01; // bit 2
+    sg[32] = ((day % 10) >> 3) & 0x01; // bit 3
 
     //星期
-    sg[36] = wday / 4;
+    sg[38] = wday / 4;
     sg[37] = (wday % 4) / 2;
-    sg[38] = wday % 2;
+    sg[36] = wday % 2;
 
-    //小时
-    sg[39] = hour_24 / 20;
-    sg[40] = (hour_24 % 20) / 10;
-    sg[41] = (hour_24 % 10) / 8;
-    sg[42] = (hour_24 % 8) / 4;
-    sg[43] = (hour_24 % 4) / 2;
-    sg[44] = hour_24 % 2;
+    //小时 BCD
+    // 小时十位 BCD (bits 39-41)
+    sg[40] = (hour_24 / 10) & 0x01;       // bit 0
+    sg[39] = ((hour_24 / 10) >> 1) & 0x01; // bit 1
+    // 小时个位 BCD (bits 42-44)
+    sg[44] = (hour_24 % 10) & 0x01;       // bit 0
+    sg[43] = ((hour_24 % 10) >> 1) & 0x01; // bit 1
+    sg[42] = ((hour_24 % 10) >> 2) & 0x01; // bit 2
+    sg[41] = ((hour_24 % 10) >> 3) & 0x01; // bit 2
 
-    //分钟
-    sg[45] = min / 40;
-    sg[46] = (min % 40) / 20;
-    sg[47] = (min % 20) / 10;
-    sg[48] = (min % 10) / 8;
-    sg[49] = (min % 8) / 4;
-    sg[50] = (min % 4) / 2;
-    sg[51] = min % 2;
-
+    //分钟 BCD
+    // 分钟十位 BCD (bits 45-48)
+    sg[47] = (min / 10) & 0x01;       // bit 0
+    sg[46] = ((min / 10) >> 1) & 0x01; // bit 1
+    sg[45] = ((min / 10) >> 2) & 0x01; // bit 2
+    // 分钟个位 BCD (bits 49-51)
+    sg[51] = (min % 10) & 0x01;       // bit 0
+    sg[50] = ((min % 10) >> 1) & 0x01; // bit 1
+    sg[49] = ((min % 10) >> 2) & 0x01; // bit 2
+    sg[48] = ((min % 10) >> 3) & 0x01; // bit 2
+    #ifdef DEBUG
+    Serial.println("MSF Encoding:");
+    Serial.println(min);
+    #endif
     //固定
     sg[52] = 0;
     sg[53] = 1;
@@ -812,8 +877,10 @@ void processSignalTransmission() {
       // BPC每20秒更新一次完整帧
       if (now_sec % 20 == 0) {
         BPC_encode(&timeInfo);
+        #ifdef DEBUG
         Serial.printf("\n[BPC] Frame Update: %02d:%02d:%02d (Segment %d)\n", 
                       timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec, now_sec/20);
+        #endif
       }
     } else {
       // WWVB/JJY/DCF每分钟（0秒）更新一次完整帧
@@ -826,20 +893,29 @@ void processSignalTransmission() {
         else if (selected_protocol == PROTO_DCF77) {
           DCF_encode(&timeInfo);
         }
+        else if (selected_protocol == PROTO_MSF) {
+          MSF_encode(&timeInfo);
+        }
+        #ifdef DEBUG
         Serial.printf("\n[%s] Frame Update: %02d:%02d:%02d\n", 
-                      (selected_protocol == PROTO_WWVB) ? "WWVB" : "JJY",
+                      (selected_protocol == PROTO_WWVB) ? "WWVB" : (selected_protocol == PROTO_JJY40 || selected_protocol == PROTO_JJY60) ? "JJY" : (selected_protocol == PROTO_DCF77) ? "DCF" : "MSF",
                       timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+        #endif
       }
     }
     int curr_val_s;
     switch (selected_protocol) {
     case PROTO_BPC:{
       curr_val_s = sg[current_sec_index % 20];
+      #ifdef DEBUG
       Serial.printf("%d ",curr_val_s);
+      #endif
       break;}
     default:{
       curr_val_s = sg[current_sec_index];
+      #ifdef DEBUG
       Serial.printf("%d ",curr_val_s);
+      #endif
       break;}
     }
   }
@@ -986,7 +1062,7 @@ String generateHTML(String status = "") {
   html.replace("%STATUS%", status);
   
   // 协议选择
-  for(int i=0; i<4; i++) {
+  for(int i=0; i<6; i++) {
     String tag = "%SEL_" + String(i) + "%";
     html.replace(tag, (selected_protocol == i) ? "selected" : "");
   }
@@ -1052,11 +1128,15 @@ void handleVerifyKey() {
     prefs.putBool("auth_verified", true); // 保存验证状态
     prefs.putString("saved_auth_key", input_key); // 保存密钥到Flash
     status = "<div class='status success'>" + String(lang.auth_success) + "</div>";
+    #ifdef DEBUG
     Serial.println("Authentication successful! Key saved.");
+    #endif
   } else {
     auth_verified = false;
     status = "<div class='status error'>" + String(lang.auth_failed) + "</div>";
+    #ifdef DEBUG
     Serial.printf("Auth failed! Input: %s\n", input_key.c_str());
+    #endif
   }
   
   server.send(200, "text/html; charset=UTF-8", generateHTML(status));
@@ -1066,9 +1146,10 @@ void handleVerifyKey() {
 void resetToFactory() {
   // 清除所有存储的配置
   prefs.clear(); // 清空整个命名空间
+  #ifdef DEBUG
   Serial.println("=== Factory Reset ===");
   Serial.println("All settings cleared. Restarting...");
-  
+  #endif
   // 强制重启设备
   delay(1000);
   ESP.restart();
@@ -1129,7 +1210,9 @@ void setupWebServer() {
   });
    
   server.begin();
+  #ifdef DEBUG
   Serial.println("Web Server Started");
+  #endif
 }
 
 // 同步NTP时间（修正时区配置）
@@ -1155,9 +1238,11 @@ bool syncNTPTime() {
   if (getLocalTime(&t)) {
     ntp_time_valid = true;
     last_ntp_sync = millis();
+    #ifdef DEBUG
     Serial.printf("NTP Synced: %04d-%02d-%02d %02d:%02d:%02d\n",
                   t.tm_year+1900, t.tm_mon+1, t.tm_mday,
                   t.tm_hour, t.tm_min, t.tm_sec);
+    #endif
     digitalWrite(LEDG, LOW);     
     return true;
   }
@@ -1175,20 +1260,27 @@ bool connectToWiFi() {
   WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
   
   unsigned long start = millis();
+  #ifdef DEBUG
   Serial.print("Connecting to WiFi: ");
   Serial.println(wifi_ssid);
-  
+  #endif
   while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
     delay(500);
+    #ifdef DEBUG
     Serial.print(".");
+    #endif
   }
   
   if (WiFi.status() == WL_CONNECTED) {
+    #ifdef DEBUG
     Serial.print("\nWiFi Connected: ");
     Serial.println(WiFi.localIP());
+    #endif
     return true;
   } else {
+    #ifdef DEBUG
     Serial.println("\nWiFi Connect Failed");
+    #endif
     return false;
   }
 }
@@ -1210,8 +1302,10 @@ void startAPMode() {
   dnsServer.start(DNS_PORT, "*", apIP);
   
   // 打印带MAC的AP信息
+  #ifdef DEBUG
   Serial.printf("AP Mode Started: %s (Password: %s), IP: %s\n", 
                 ap_ssid.c_str(), ap_password, apIP.toString().c_str());
+  #endif
 }
 
 // ==========================================
@@ -1219,12 +1313,16 @@ void startAPMode() {
 // ==========================================
 void setup() {
   // 初始化串口
+  #ifdef DEBUG
   Serial.begin(115200);
+  #endif
   delay(100);
   
   // 新增：初始化SPIFFS（忽略失败，仅解决链接问题）
   if (!SPIFFS.begin(true)) { 
+    #ifdef DEBUG
     Serial.println("SPIFFS Mount Failed (ignore for this project)");
+    #endif
   }
   pinMode(LEDR, OUTPUT);
   digitalWrite(LEDR, HIGH);
@@ -1282,14 +1380,17 @@ void setup() {
     if (auth_verified) {
       syncNTPTime();
     } else {
+      #ifdef DEBUG
       Serial.println("Skip NTP sync: Authentication required");
+      #endif
     }
   }
 
   // 初始化Web服务器
   setupWebServer();
-
+  #ifdef DEBUG
   Serial.println("System Initialized");
+  #endif
 }
 
 void loop() {
